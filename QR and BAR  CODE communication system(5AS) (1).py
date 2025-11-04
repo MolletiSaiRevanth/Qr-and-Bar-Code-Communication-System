@@ -9,11 +9,20 @@ import numpy as np
 import io
 import os
 
+# Try to import pyzbar for better barcode scanning
+try:
+    from pyzbar.pyzbar import decode as pyzbar_decode
+    PYZBAR_AVAILABLE = True
+except ImportError:
+    PYZBAR_AVAILABLE = False
+    print("Warning: pyzbar not installed. Barcode scanning will be limited.")
+    print("Install it with: pip install pyzbar")
+
 class HybridCodeSystem:
     def __init__(self, root):
         self.root = root
         self.root.title("Hybrid QR & Barcode Communication System")
-        self.root.geometry("800x600")
+        self.root.geometry("900x700")
         self.root.resizable(True, True)
         
         # Color scheme
@@ -91,6 +100,13 @@ class HybridCodeSystem:
                  bg=self.primary_color, fg="white", font=("Arial", 11, "bold"),
                  padx=20, pady=10).pack()
         
+        # Warning if pyzbar not available
+        if not PYZBAR_AVAILABLE:
+            warning_label = tk.Label(button_frame, 
+                                    text="⚠ Install pyzbar for full barcode scanning support",
+                                    bg=self.bg_color, fg="orange", font=("Arial", 9, "italic"))
+            warning_label.pack(pady=5)
+        
         # Image display
         img_frame = tk.LabelFrame(scan_frame, text="Scanned Image", 
                                  bg=self.bg_color, font=("Arial", 12, "bold"))
@@ -142,25 +158,37 @@ class HybridCodeSystem:
     
     def generate_barcode(self, data):
         """Generate Barcode (Code128)"""
-        # Barcode requires alphanumeric data
-        code128 = barcode.get_barcode_class('code128')
-        barcode_instance = code128(data, writer=ImageWriter())
+        # Validate data for Code128
+        if not data:
+            raise ValueError("Barcode data cannot be empty")
         
-        # Save to bytes buffer
-        buffer = io.BytesIO()
-        barcode_instance.write(buffer)
-        buffer.seek(0)
-        
-        img = Image.open(buffer)
-        self.current_image = img
-        self.display_image(img)
-        messagebox.showinfo("Success", "Barcode generated successfully!")
+        # Code128 accepts ASCII characters 0-127
+        try:
+            code128 = barcode.get_barcode_class('code128')
+            barcode_instance = code128(data, writer=ImageWriter())
+            
+            # Save to bytes buffer
+            buffer = io.BytesIO()
+            barcode_instance.write(buffer)
+            buffer.seek(0)
+            
+            img = Image.open(buffer)
+            self.current_image = img
+            self.display_image(img)
+            messagebox.showinfo("Success", "Barcode generated successfully!")
+        except Exception as e:
+            raise ValueError(f"Invalid barcode data. Code128 requires valid ASCII characters.\n{str(e)}")
     
     def display_image(self, img):
         """Display image in the GUI"""
         # Resize image to fit in the display area
         img_copy = img.copy()
-        img_copy.thumbnail((400, 400), Image.Resampling.LANCZOS)
+        
+        # Handle different Pillow versions
+        try:
+            img_copy.thumbnail((500, 500), Image.Resampling.LANCZOS)
+        except AttributeError:
+            img_copy.thumbnail((500, 500), Image.LANCZOS)
         
         photo = ImageTk.PhotoImage(img_copy)
         self.image_label.configure(image=photo, text="")
@@ -174,18 +202,21 @@ class HybridCodeSystem:
         
         file_path = filedialog.asksaveasfilename(
             defaultextension=".png",
-            filetypes=[("PNG files", "*.png"), ("All files", "*.*")]
+            filetypes=[("PNG files", "*.png"), ("JPEG files", "*.jpg"), ("All files", "*.*")]
         )
         
         if file_path:
-            self.current_image.save(file_path)
-            messagebox.showinfo("Success", f"Code saved to:\n{file_path}")
+            try:
+                self.current_image.save(file_path)
+                messagebox.showinfo("Success", f"Code saved to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save file:\n{str(e)}")
     
     def scan_from_file(self):
-        """Scan QR code or Barcode from image file using OpenCV"""
+        """Scan QR code or Barcode from image file"""
         file_path = filedialog.askopenfilename(
             title="Select Image",
-            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp"), ("All files", "*.*")]
+            filetypes=[("Image files", "*.png *.jpg *.jpeg *.bmp *.gif"), ("All files", "*.*")]
         )
         
         if not file_path:
@@ -195,7 +226,13 @@ class HybridCodeSystem:
             # Display the image
             img = Image.open(file_path)
             img_copy = img.copy()
-            img_copy.thumbnail((400, 400), Image.Resampling.LANCZOS)
+            
+            # Handle different Pillow versions
+            try:
+                img_copy.thumbnail((500, 500), Image.Resampling.LANCZOS)
+            except AttributeError:
+                img_copy.thumbnail((500, 500), Image.LANCZOS)
+            
             photo = ImageTk.PhotoImage(img_copy)
             self.scan_image_label.configure(image=photo, text="")
             self.scan_image_label.image = photo
@@ -203,41 +240,59 @@ class HybridCodeSystem:
             # Read image with OpenCV
             image = cv2.imread(file_path)
             
-            # Try QR Code detection first
-            qr_detector = cv2.QRCodeDetector()
-            data, bbox, _ = qr_detector.detectAndDecode(image)
+            if image is None:
+                raise ValueError("Unable to read image file. File may be corrupted.")
             
             result = ""
             found = False
             
+            # Try QR Code detection first
+            qr_detector = cv2.QRCodeDetector()
+            data, bbox, _ = qr_detector.detectAndDecode(image)
+            
             if data:
-                result += "QR Code Found!\n"
+                result += "✓ QR Code Found!\n"
                 result += f"Type: QR Code\n"
                 result += f"Data: {data}\n"
                 result += "-" * 50 + "\n"
                 found = True
             
-            # Try Barcode detection using simple edge detection
-            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            # Try Barcode detection
+            if PYZBAR_AVAILABLE:
+                # Use pyzbar for accurate barcode scanning
+                decoded_objects = pyzbar_decode(image)
+                for obj in decoded_objects:
+                    try:
+                        decoded_data = obj.data.decode('utf-8')
+                        result += f"✓ Barcode Found!\n"
+                        result += f"Type: {obj.type}\n"
+                        result += f"Data: {decoded_data}\n"
+                        result += "-" * 50 + "\n"
+                        found = True
+                    except Exception as e:
+                        result += f"Barcode found but couldn't decode: {str(e)}\n"
+                        result += "-" * 50 + "\n"
+                        found = True
+            else:
+                # Fallback: Basic pattern detection (not actual decoding)
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for contour in contours:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    if h > 0:
+                        aspect_ratio = w / float(h)
+                        # Barcodes typically have high aspect ratio
+                        if aspect_ratio > 3 and w > 100:
+                            result += "⚠ Barcode-like pattern detected!\n"
+                            result += "Install pyzbar for full barcode decoding:\n"
+                            result += "pip install pyzbar\n"
+                            result += "-" * 50 + "\n"
+                            found = True
+                            break
             
-            # Apply thresholding
-            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            
-            # Try to read barcode using contour detection (basic approach)
-            # Note: This is a simplified barcode detection, not as robust as pyzbar
-            contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            for contour in contours:
-                x, y, w, h = cv2.boundingRect(contour)
-                aspect_ratio = w / float(h)
-                # Barcodes typically have high aspect ratio
-                if aspect_ratio > 3 and w > 100:
-                    result += "Barcode-like pattern detected!\n"
-                    result += "(For accurate barcode reading, install pyzbar library)\n"
-                    result += "-" * 50 + "\n"
-                    found = True
-                    break
-            
+            # Display results
             if found:
                 self.result_text.configure(state='normal')
                 self.result_text.delete("1.0", "end")
@@ -247,16 +302,23 @@ class HybridCodeSystem:
             else:
                 self.result_text.configure(state='normal')
                 self.result_text.delete("1.0", "end")
-                self.result_text.insert("1.0", "No QR code or Barcode found in the image!\n\n"
+                self.result_text.insert("1.0", "❌ No QR code or Barcode found in the image!\n\n"
                                               "Tips:\n"
-                                              "- Make sure the code is clear and visible\n"
-                                              "- Try a higher resolution image\n"
-                                              "- Ensure good lighting in the image")
+                                              "• Make sure the code is clear and visible\n"
+                                              "• Try a higher resolution image\n"
+                                              "• Ensure good lighting and contrast\n"
+                                              "• Make sure the code is not distorted\n"
+                                              "• For barcodes, install pyzbar: pip install pyzbar")
                 self.result_text.configure(state='disabled')
                 messagebox.showwarning("Warning", "No code found in the image!")
                 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to scan code:\n{str(e)}")
+            # Clear result text on error
+            self.result_text.configure(state='normal')
+            self.result_text.delete("1.0", "end")
+            self.result_text.insert("1.0", f"Error: {str(e)}")
+            self.result_text.configure(state='disabled')
 
 def main():
     root = tk.Tk()
